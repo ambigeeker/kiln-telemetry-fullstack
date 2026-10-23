@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Centralized Kiln Telemetry & Batch Database (PostgreSQL)</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <header class="app-header">
+        <div>
+            <span class="db-badge">PostgreSQL + Node.js Express Live Connected</span>
+            <h1>Centralized Kiln Telemetry & Batch Run Database 🔥🗄️</h1>
+            <p>Multi-unit relational drying logs with server-side thermodynamic computation and ACID persistence</p>
+        </div>
+    </header>
+
+    <section class="kpi-grid">
+        <div class="kpi-card">
+            <span class="kpi-label">Total Logged Batches (DB)</span>
+            <span class="kpi-value" id="kpi_total_runs">0</span>
+        </div>
+        <div class="kpi-card">
+            <span class="kpi-label">Cumulative Water Removed</span>
+            <span class="kpi-value" id="kpi_total_water">0.0 <small>kg</small></span>
+        </div>
+        <div class="kpi-card">
+            <span class="kpi-label">Mean Thermal Efficiency</span>
+            <span class="kpi-value" id="kpi_avg_eff">0.0 <small>%</small></span>
+        </div>
+        <div class="kpi-card">
+            <span class="kpi-label">Total Biomass Fuel Logged</span>
+            <span class="kpi-value" id="kpi_total_fuel">0.0 <small>kg</small></span>
+        </div>
+    </section>
+
+    <main class="main-grid">
+        <!-- Left Form: Submit Batch to PostgreSQL via POST /api/batches -->
+        <section class="card">
+            <h2>Log New Drying Batch Run</h2>
+            <form id="batch_form">
+                <div class="form-group">
+                    <label for="kiln_id">Select Physical Kiln Unit (Foreign Key)</label>
+                    <select id="kiln_id" required>
+                        <!-- Populated dynamically from GET /api/kilns -->
+                    </select>
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="operator_name">Operator / Engineer</label>
+                        <input type="text" id="operator_name" value="Engr. Qudus" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="product_type">Product / Species</label>
+                        <input type="text" id="product_type" placeholder="e.g., Catfish / Tilapia" required>
+                    </div>
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="initial_weight_kg">Initial Wet Batch Weight (kg)</label>
+                        <input type="number" id="initial_weight_kg" step="0.1" min="1" value="100" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="fuel_consumed_kg">Fuel Consumed (kg)</label>
+                        <input type="number" id="fuel_consumed_kg" step="0.1" min="0.5" value="25" required>
+                    </div>
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="initial_mc_pct">Initial Moisture (%)</label>
+                        <input type="number" id="initial_mc_pct" step="0.5" min="5" max="95" value="75" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="final_mc_pct">Final Target Moisture (%)</label>
+                        <input type="number" id="final_mc_pct" step="0.5" min="1" max="80" value="12" required>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label for="drying_duration_hrs">Total Drying Duration (Hours)</label>
+                    <input type="number" id="drying_duration_hrs" step="0.25" min="0.5" value="6.0" required>
+                </div>
+
+                <div id="error_box" class="error-box" style="display:none;"></div>
+
+                <button type="submit" class="btn-primary">Commit Batch to PostgreSQL Database ➔</button>
+            </form>
+        </section>
+
+        <!-- Right Table: Live Relational Records from GET /api/batches -->
+        <section class="card">
+            <h2>Relational Batch Records (`batch_runs` INNER JOIN `kiln_units`)</h2>
+            <div class="table-wrapper">
+                <table class="db-table">
+                    <thead>
+                        <tr>
+                            <th>Run ID</th>
+                            <th>Kiln Unit</th>
+                            <th>Operator & Product</th>
+                            <th>Wet Wt (kg)</th>
+                            <th>MC Drop</th>
+                            <th>Water Out</th>
+                            <th>Fuel Used</th>
+                            <th>Thermal Eff.</th>
+                            <th>Action</th>
+                        </tr>
+                    </thead>
+                    <tbody id="batch_tbody">
+                        <!-- Populated from PostgreSQL -->
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    </main>
+
+    <script src="app.js"></script>
+</body>
+</html>
