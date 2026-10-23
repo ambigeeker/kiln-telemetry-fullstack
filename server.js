@@ -133,3 +133,17 @@ app.use(express.static(path.join(__dirname, "public")));
 app.get("/", (req, res) => {
     res.sendFile(path.join(__dirname, "public", "index.html"));
 });
+const pool = new Pool(
+    process.env.DATABASE_URL
+        ? {
+              connectionString: process.env.DATABASE_URL,
+              ssl: { rejectUnauthorized: false } // Required for cloud databases
+          }
+        : {
+              user: process.env.DB_USER,
+              host: process.env.DB_HOST,
+              database: process.env.DB_NAME,
+              password: process.env.DB_PASSWORD,
+              port: process.env.DB_PORT,
+          }
+);
