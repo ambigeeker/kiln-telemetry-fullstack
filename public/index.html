@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Centralized Kiln Telemetry & Batch Run Database</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <style>
     :root {
       --bg-dark: #0b1120;
@@ -55,13 +56,24 @@
       gap: 24px;
       align-items: start;
     }
+    .right-column {
+      display: flex;
+      flex-direction: column;
+      gap: 24px;
+    }
     .panel {
       background: var(--card-bg);
       border: 1px solid var(--border);
       border-radius: 12px;
       padding: 24px;
     }
-    .panel h2 { font-size: 17px; font-weight: 700; margin-bottom: 20px; }
+    .panel-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 20px;
+    }
+    .panel h2 { font-size: 17px; font-weight: 700; margin: 0; }
     
     .form-group { margin-bottom: 16px; }
     .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 16px; }
@@ -91,6 +103,19 @@
     }
     .btn-submit:hover { background: #0369a1; }
 
+    .btn-export {
+      background: rgba(16, 185, 129, 0.15);
+      color: #34d399;
+      border: 1px solid rgba(52, 211, 153, 0.35);
+      padding: 8px 14px;
+      border-radius: 8px;
+      font-weight: 600;
+      font-size: 12px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .btn-export:hover { background: rgba(16, 185, 129, 0.28); }
+
     table { width: 100%; border-collapse: collapse; font-size: 13px; }
     th {
       background: #0d1322;
@@ -112,6 +137,7 @@
       font-size: 12px;
     }
     .btn-del:hover { background: rgba(239, 68, 68, 0.3); }
+    .chart-container { position: relative; height: 260px; width: 100%; }
   </style>
 </head>
 <body>
@@ -142,7 +168,9 @@
   <div class="main-grid">
     <!-- Left Form Panel -->
     <div class="panel">
-      <h2>Log New Drying Batch Run</h2>
+      <div class="panel-header">
+        <h2>Log New Drying Batch Run</h2>
+      </div>
       <form id="batch-form">
         <div class="form-group">
           <label>Select Physical Kiln Unit (Foreign Key)</label>
@@ -191,29 +219,46 @@
       </form>
     </div>
 
-    <!-- Right Table Panel -->
-    <div class="panel">
-      <h2>Relational Batch Records (`batch_runs` INNER JOIN `kiln_units`)</h2>
-      <table>
-        <thead>
-          <tr>
-            <th>RUN ID</th>
-            <th>KILN UNIT</th>
-            <th>OPERATOR & PRODUCT</th>
-            <th>WET WT (KG)</th>
-            <th>MC DROP</th>
-            <th>WATER OUT</th>
-            <th>FUEL USED</th>
-            <th>THERMAL EFF.</th>
-            <th>ACTION</th>
-          </tr>
-        </thead>
-        <tbody id="batch-table-body"></tbody>
-      </table>
+    <!-- Right Column: Table + Chart -->
+    <div class="right-column">
+      <div class="panel">
+        <div class="panel-header">
+          <h2>Relational Batch Records (`batch_runs` INNER JOIN `kiln_units`)</h2>
+          <button type="button" class="btn-export" onclick="exportToCSV()">⬇ Export CSV (Excel)</button>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>RUN ID</th>
+              <th>KILN UNIT</th>
+              <th>OPERATOR & PRODUCT</th>
+              <th>WET WT (KG)</th>
+              <th>MC DROP</th>
+              <th>WATER OUT</th>
+              <th>FUEL USED</th>
+              <th>THERMAL EFF.</th>
+              <th>ACTION</th>
+            </tr>
+          </thead>
+          <tbody id="batch-table-body"></tbody>
+        </table>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header">
+          <h2>Thermodynamic Performance Analytics (Water Removed vs. Thermal Efficiency)</h2>
+        </div>
+        <div class="chart-container">
+          <canvas id="telemetryChart"></canvas>
+        </div>
+      </div>
     </div>
   </div>
 
   <script>
+    let cachedBatches = [];
+    let telemetryChartInstance = null;
+
     async function loadKilns() {
       try {
         const res = await fetch('/api/kilns');
@@ -236,6 +281,8 @@
       try {
         const res = await fetch('/api/batches');
         const batches = await res.json();
+        cachedBatches = batches;
+
         const tbody = document.getElementById('batch-table-body');
         tbody.innerHTML = '';
 
@@ -272,9 +319,121 @@
         document.getElementById('kpi-fuel').textContent = `${totalFuel.toFixed(1)} kg`;
         const meanEff = batches.length > 0 ? (sumEff / batches.length) : 0;
         document.getElementById('kpi-eff').textContent = `${meanEff.toFixed(1)} %`;
+
+        renderChart(batches);
       } catch (err) {
         console.error('Failed to load batches:', err);
       }
+    }
+
+    function renderChart(batches) {
+      const ctx = document.getElementById('telemetryChart').getContext('2d');
+      const chronological = [...batches].reverse();
+
+      const labels = chronological.map(b => `Run #${b.run_id} (${b.product_species})`);
+      const waterData = chronological.map(b => parseFloat(b.water_removed_kg) || 0);
+      const effData = chronological.map(b => parseFloat(b.thermal_efficiency_pct) || 0);
+
+      if (telemetryChartInstance) {
+        telemetryChartInstance.destroy();
+      }
+
+      telemetryChartInstance = new Chart(ctx, {
+        type: 'bar',
+        data: {
+          labels,
+          datasets: [
+            {
+              label: 'Water Removed (kg)',
+              data: waterData,
+              backgroundColor: 'rgba(56, 189, 248, 0.65)',
+              borderColor: '#38bdf8',
+              borderWidth: 1,
+              borderRadius: 6,
+              yAxisID: 'y'
+            },
+            {
+              label: 'Thermal Efficiency (%)',
+              data: effData,
+              type: 'line',
+              borderColor: '#34d399',
+              backgroundColor: '#34d399',
+              borderWidth: 2,
+              tension: 0.3,
+              pointRadius: 4,
+              yAxisID: 'y1'
+            }
+          ]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: { labels: { color: '#cbd5e1' } }
+          },
+          scales: {
+            x: { ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } },
+            y: {
+              type: 'linear',
+              position: 'left',
+              title: { display: true, text: 'Water Removed (kg)', color: '#38bdf8' },
+              ticks: { color: '#94a3b8' },
+              grid: { color: '#1e293b' }
+            },
+            y1: {
+              type: 'linear',
+              position: 'right',
+              title: { display: true, text: 'Thermal Efficiency (%)', color: '#34d399' },
+              ticks: { color: '#94a3b8' },
+              grid: { drawOnChartArea: false }
+            }
+          }
+        }
+      });
+    }
+
+    function exportToCSV() {
+      if (!cachedBatches.length) {
+        alert('No batch records available to export yet.');
+        return;
+      }
+
+      const headers = [
+        'Run ID', 'Kiln Unit', 'Location', 'Operator', 'Product Species',
+        'Initial Wet Weight (kg)', 'Initial Moisture (%)', 'Final Moisture (%)',
+        'Duration (Hours)', 'Water Removed (kg)', 'Fuel Consumed (kg)',
+        'Thermal Efficiency (%)', 'Timestamp'
+      ];
+
+      const rows = cachedBatches.map(b => [
+        b.run_id,
+        `"${b.kiln_name}"`,
+        `"${b.location}"`,
+        `"${b.operator_name}"`,
+        `"${b.product_species}"`,
+        b.initial_wet_weight_kg,
+        b.initial_moisture_pct,
+        b.final_moisture_pct,
+        b.duration_hours,
+        b.water_removed_kg,
+        b.fuel_consumed_kg,
+        b.thermal_efficiency_pct,
+        `"${new Date(b.created_at).toLocaleString()}"`
+      ]);
+
+      const csvContent = [
+        headers.join(','),
+        ...rows.map(r => r.join(','))
+      ].join('\n');
+
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', `kiln_telemetry_batches_${new Date().toISOString().slice(0,10)}.csv`);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
     }
 
     document.getElementById('batch-form').addEventListener('submit', async (e) => {
@@ -307,7 +466,6 @@
       await loadBatches();
     }
 
-    // Initialize dashboard on page load
     loadKilns();
     loadBatches();
   </script>
