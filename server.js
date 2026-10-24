@@ -9,7 +9,6 @@ const PORT = process.env.PORT || 10000;
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Single, unified PostgreSQL connection pool (Cloud + Local compatible)
 const pool = new Pool(
   process.env.DATABASE_URL
     ? {
@@ -25,11 +24,23 @@ const pool = new Pool(
       }
 );
 
-// Auto-initialize and seed database tables on startup
 async function initDatabase() {
   try {
+    // Test if both tables exist with the exact columns needed for INNER JOIN
     await pool.query(`
-      CREATE TABLE IF NOT EXISTS kiln_units (
+      SELECT k.kiln_id, k.kiln_name, k.location, b.run_id, b.water_removed_kg, b.thermal_efficiency_pct
+      FROM kiln_units k
+      LEFT JOIN batch_runs b ON k.kiln_id = b.kiln_id
+      LIMIT 1;
+    `);
+    console.log('✅ Existing schema matches 100%');
+  } catch (err) {
+    console.log('🔄 Rebuilding database tables to match exact schema...');
+    await pool.query('DROP TABLE IF EXISTS batch_runs CASCADE;');
+    await pool.query('DROP TABLE IF EXISTS kiln_units CASCADE;');
+
+    await pool.query(`
+      CREATE TABLE kiln_units (
         kiln_id SERIAL PRIMARY KEY,
         kiln_name VARCHAR(120) NOT NULL,
         location VARCHAR(100),
@@ -38,7 +49,7 @@ async function initDatabase() {
     `);
 
     await pool.query(`
-      CREATE TABLE IF NOT EXISTS batch_runs (
+      CREATE TABLE batch_runs (
         run_id SERIAL PRIMARY KEY,
         kiln_id INTEGER REFERENCES kiln_units(kiln_id) ON DELETE CASCADE,
         operator_name VARCHAR(100),
@@ -53,34 +64,23 @@ async function initDatabase() {
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
     `);
+  }
 
-    // Check if kiln_units is empty or missing 'kiln_name', and repair/seed automatically
-    const countRes = await pool.query('SELECT COUNT(*) FROM kiln_units');
-    if (parseInt(countRes.rows[0].count, 10) === 0) {
-      await pool.query(`
-        INSERT INTO kiln_units (kiln_name, location, max_capacity_kg) VALUES
-        ('NIOMR-FAO Prototype Kiln A (250kg)', 'Fish Tech Lab 1', 250.00),
-        ('NIOMR-FAO Prototype Kiln B (500kg)', 'Fish Tech Lab 2', 500.00),
-        ('Mechanical Dryer Unit C (150kg)', 'Pilot Plant Wing', 150.00);
-      `);
-      console.log('✅ Seeded default kiln_units into PostgreSQL');
-    }
-    console.log('✅ Database schema verified and ready');
-  } catch (err) {
-    console.warn('⚠️ Schema mismatch detected, rebuilding clean tables...', err.message);
-    try {
-      await pool.query('DROP TABLE IF EXISTS batch_runs CASCADE;');
-      await pool.query('DROP TABLE IF EXISTS kiln_units CASCADE;');
-      await initDatabase();
-    } catch (rebuildErr) {
-      console.error('❌ Database rebuild error:', rebuildErr.message);
-    }
+  // Ensure kiln units are seeded
+  const countRes = await pool.query('SELECT COUNT(*) FROM kiln_units');
+  if (parseInt(countRes.rows[0].count, 10) === 0) {
+    await pool.query(`
+      INSERT INTO kiln_units (kiln_name, location, max_capacity_kg) VALUES
+      ('NIOMR-FAO Prototype Kiln A (250kg)', 'Fish Tech Lab 1', 250.00),
+      ('NIOMR-FAO Prototype Kiln B (500kg)', 'Fish Tech Lab 2', 500.00),
+      ('Mechanical Dryer Unit C (150kg)', 'Pilot Plant Wing', 150.00);
+    `);
+    console.log('✅ Seeded default kiln_units');
   }
 }
 
 initDatabase();
 
-// GET all physical kiln units for the dropdown
 app.get('/api/kilns', async (req, res) => {
   try {
     const result = await pool.query('SELECT * FROM kiln_units ORDER BY kiln_id ASC');
@@ -91,14 +91,10 @@ app.get('/api/kilns', async (req, res) => {
   }
 });
 
-// GET all logged batch runs with INNER JOIN on kiln_units
 app.get('/api/batches', async (req, res) => {
   try {
     const result = await pool.query(`
-      SELECT 
-        b.*, 
-        k.kiln_name, 
-        k.location 
+      SELECT b.*, k.kiln_name, k.location
       FROM batch_runs b
       INNER JOIN kiln_units k ON b.kiln_id = k.kiln_id
       ORDER BY b.run_id DESC
@@ -110,7 +106,6 @@ app.get('/api/batches', async (req, res) => {
   }
 });
 
-// POST a new drying batch run with server-side thermodynamic calculations
 app.post('/api/batches', async (req, res) => {
   try {
     const {
@@ -130,37 +125,29 @@ app.post('/api/batches', async (req, res) => {
     const mFinal = parseFloat(final_moisture_pct) || 0;
     const dur = parseFloat(duration_hours) || 0;
 
-    // Mass balance: Water removed (kg) = W_i * (M_i - M_f) / (100 - M_f)
     const waterRemoved = Math.max(0, wetWt * ((mInit - mFinal) / (100 - mFinal)));
+    const thermalEfficiency = Math.min(100, Math.max(0, ((waterRemoved * 2.26) / (fuelKg * 16.5)) * 100));
 
-    // Thermal Efficiency (%) = (Water Removed * Latent Heat 2.26 MJ/kg) / (Fuel * Calorific Value 16.5 MJ/kg) * 100
-    const latentHeatMJ = 2.26;
-    const biomassCalorificMJ = 16.5;
-    const thermalEfficiency = Math.min(100, Math.max(0, ((waterRemoved * latentHeatMJ) / (fuelKg * biomassCalorificMJ)) * 100));
-
-    const insertQuery = `
-      INSERT INTO batch_runs (
+    const result = await pool.query(
+      `INSERT INTO batch_runs (
         kiln_id, operator_name, product_species, initial_wet_weight_kg,
         fuel_consumed_kg, initial_moisture_pct, final_moisture_pct,
         duration_hours, water_removed_kg, thermal_efficiency_pct
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-      RETURNING *;
-    `;
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *;`,
+      [
+        parseInt(kiln_id, 10),
+        operator_name || 'Engr. Qudus',
+        product_species || 'Catfish',
+        wetWt,
+        fuelKg,
+        mInit,
+        mFinal,
+        dur,
+        waterRemoved.toFixed(2),
+        thermalEfficiency.toFixed(2)
+      ]
+    );
 
-    const values = [
-      parseInt(kiln_id, 10),
-      operator_name,
-      product_species,
-      wetWt,
-      fuelKg,
-      mInit,
-      mFinal,
-      dur,
-      waterRemoved.toFixed(2),
-      thermalEfficiency.toFixed(2)
-    ];
-
-    const result = await pool.query(insertQuery, values);
     res.status(201).json(result.rows[0]);
   } catch (err) {
     console.error('Error logging batch:', err.message);
@@ -168,14 +155,11 @@ app.post('/api/batches', async (req, res) => {
   }
 });
 
-// DELETE a batch run record
 app.delete('/api/batches/:id', async (req, res) => {
   try {
-    const { id } = req.params;
-    await pool.query('DELETE FROM batch_runs WHERE run_id = $1', [id]);
-    res.json({ message: 'Batch deleted successfully' });
+    await pool.query('DELETE FROM batch_runs WHERE run_id = $1', [req.params.id]);
+    res.json({ message: 'Deleted' });
   } catch (err) {
-    console.error('Error deleting batch:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
